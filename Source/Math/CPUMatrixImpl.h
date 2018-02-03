@@ -7049,6 +7049,18 @@ void CPUMatrix<ElemType>::SetCompatibleMode()
     // #endif
 }
 
+template <class ElemType>
+void CPUMatrix<ElemType>::SetOptimizationFlags(int flags)
+{
+    m_optimizationFlags = flags;
+}
+
+template <class ElemType>
+int CPUMatrix<ElemType>::GetOptimizationFlags()
+{
+    return m_optimizationFlags;
+}
+
 // -----------------------------------------------------------------------
 // entry points from Matrix.cpp; calls into CPUMatrixTensorOpImpl
 // -----------------------------------------------------------------------

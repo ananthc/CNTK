@@ -424,7 +424,8 @@ void CPUMatrixTensorOpImpl(ElemType beta, const CPUMatrix<ElemType>& a, CPUMatri
         InvalidArgument("TensorOp: Unary reduction operations other than opMax, opMin, opSum, and opLogSum are not implemented.");
 
 #ifdef USE_MKL
-    if (CPUMatrixSpecialUnaryTensorOpImpl(beta, a, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
+    if (!!(CPUMatrix<ElemType>::GetOptimizationFlags() & CPUMatrix<ElemType>::OPT_EVAL_WITH_MKL) &&
+        CPUMatrixSpecialUnaryTensorOpImpl(beta, a, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
         return;
 #endif
 
@@ -458,7 +459,8 @@ void CPUMatrixTensorOpImpl(ElemType beta, const CPUMatrix<ElemType>& a, const CP
         InvalidArgument("TensorOp (binary): The only permitted binary reduction operation is opSum.");
 
 #ifdef USE_MKL
-    if (CPUMatrixSpecialBinaryTensorOpImpl(beta, a, b, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
+    if (!!(CPUMatrix<ElemType>::GetOptimizationFlags() & CPUMatrix<ElemType>::OPT_EVAL_WITH_MKL) &&
+        CPUMatrixSpecialBinaryTensorOpImpl(beta, a, b, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
         return;
 #endif
 
@@ -491,7 +493,8 @@ void CPUMatrixTensorOpImpl(ElemType beta, const CPUMatrix<ElemType>& a, const CP
         InvalidArgument("TensorOp: The only permitted ternary reduction operation is opSum.");
 
 #ifdef USE_MKL
-    if (CPUMatrixSpecialTernaryTensorOpImpl(beta, a, b, c, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
+    if (!!(CPUMatrix<ElemType>::GetOptimizationFlags() & CPUMatrix<ElemType>::OPT_EVAL_WITH_MKL) &&
+        CPUMatrixSpecialTernaryTensorOpImpl(beta, a, b, c, o, alpha, op, reductionOp, offsets, regularOpDims, regularStrides, reducingOpDims, reducingStrides))
         return;
 #endif
 

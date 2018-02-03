@@ -11,20 +11,36 @@ namespace Microsoft { namespace MSR { namespace CNTK {
 template<>
 bool CPUMatrixSpecialUnaryTensorOpImpl<float>(float beta, const CPUMatrix<float>& a, CPUMatrix<float>& o, float alpha, ElementWiseOperator op, ElementWiseOperator /*reductionOp*/,
     const array<size_t, 2>& offsets,
-    const SmallVector<size_t>& /*regularOpDims*/, const array<SmallVector<ptrdiff_t>, 2>& /*regularStrides*/,
+    const SmallVector<size_t>& regularOpDims, const array<SmallVector<ptrdiff_t>, 2>& regularStrides,
     const SmallVector<size_t>& reducingOpDims, const array<SmallVector<ptrdiff_t>, 2>& /*reducingStrides*/)
 {
-    if (alpha == 1.0f && beta == 0.0f &&
-        offsets[0] == 0 && offsets[1] == 0 &&
-        a.GetNumElements() == o.GetNumElements() &&
-        reducingOpDims.size() == 0)
+    if (alpha == 1.0f && beta == 0.0f && // for inference
+        reducingOpDims.size() == 0 && // no reduction
+        regularStrides[0] == regularStrides[1]) // input/output have the same strides
     {
-        int N = (int)a.GetNumElements();
+        // check if it is elementwise operation with 1:1 input/output mapping and no gap
+        size_t count = 1;
+        for (int rank = 0; rank < regularOpDims.size(); ++ rank)
+        {
+            // 0 stride can only be in the last rank
+            if (regularStrides[0][rank] == 0 && rank != regularStrides[0].size() - 1)
+                return false;
+
+            // if not continuous in memory, don't optimize
+            if ((ptrdiff_t)count != regularStrides[0][rank] || regularStrides[0][rank] == 0)
+                return false;
+
+            count *= regularOpDims[rank];
+        }
+
+        float* pA = a.Data() + offsets[0];
+        float* pO = o.Data() + offsets[1];
+
         switch(op)
         {
         case ElementWiseOperator::opLinearRectifier:
-            vsAbs(N, a.Data(), o.Data());
-            cblas_saxpby(N, 0.5f, a.Data(), 1, 0.5f, o.Data(), 1); // o = (a + abs(a))/2
+            vsAbs((int)count, pA, pO);
+            cblas_saxpby((int)count, 0.5f, pA, 1, 0.5f, pO, 1); // o = (a + abs(a))/2
             return true;
         }
     }
@@ -34,70 +50,102 @@ bool CPUMatrixSpecialUnaryTensorOpImpl<float>(float beta, const CPUMatrix<float>
 template<>
 bool CPUMatrixSpecialBinaryTensorOpImpl<float>(float beta, const CPUMatrix<float>& a, const CPUMatrix<float>& b, CPUMatrix<float>& o, float alpha, ElementWiseOperator op, ElementWiseOperator /*reductionOp*/,
     const array<size_t, 3>& offsets,
-    const SmallVector<size_t>& /*regularOpDims*/, const array<SmallVector<ptrdiff_t>, 3>& /*regularStrides*/,
+    const SmallVector<size_t>& regularOpDims, const array<SmallVector<ptrdiff_t>, 3>& regularStrides,
     const SmallVector<size_t>& reducingOpDims, const array<SmallVector<ptrdiff_t>, 3>& /*reducingStrides*/)
 {
-    if (alpha == 1.0f && beta == 0.0f &&
-        offsets[0] == 0 && offsets[1] == 0 && offsets[2] == 0 &&
-        reducingOpDims.size() == 0)
+    if (alpha == 1.0f && beta == 0.0f && // for inference
+        reducingOpDims.size() == 0 && // no reduction
+        (regularStrides[0] == regularStrides[2] ||
+         regularStrides[1] == regularStrides[2])) // one of the inputs has same strides as output
     {
-        if (a.GetNumRows() == b.GetNumRows() &&
-            a.GetNumRows() == o.GetNumRows() &&
-            a.GetNumRows() > 1 &&
-            ((a.GetNumCols() == 1 && o.GetNumCols() == b.GetNumCols()) ||
-            (b.GetNumCols() == 1 && o.GetNumCols() == a.GetNumCols())))
+        // MKL based optimization on scalar/vector, vector/vector, and matrix/vector operations
+
+        size_t elementCount[3] = { 1, 1, 1 }; // element count for a/b/o
+        for (int rank = 0; rank < regularOpDims.size(); ++ rank)
         {
-            // plus/multiply parameter (no dynamic axes, or GetNumCols() == 1)
-            float* dataWithDynamicAxes = (a.GetNumCols() == 1 ? b.Data() : a.Data());
-            float* dataParameter = (a.GetNumCols() == 1 ? a.Data() : b.Data());
-            int N = (int)a.GetNumRows();
-            switch (op)
+            for (int iOp = 0; iOp < _countof(elementCount); ++ iOp)
             {
-            case ElementWiseOperator::opSum:
-                for (int col = 0; col < o.GetNumCols(); ++col)
-                {
-                    vsAdd(N, dataWithDynamicAxes + col * N, dataParameter, o.Data() + col * N);
-                }
-                return true;
-            case ElementWiseOperator::opElementwiseProduct:
-                for (int col = 0; col < o.GetNumCols(); ++col)
-                {
-                    vsMul(N, dataWithDynamicAxes + col * N, dataParameter, o.Data() + col * N);
-                }
-                return true;
+                // 0 stride can only be in the last rank
+                if (regularStrides[iOp][rank] == 0 && rank != regularStrides[iOp].size() - 1)
+                    return false;
+
+                if (rank >= regularStrides[iOp].size() || regularStrides[iOp][rank] == 0) continue;
+
+                // if not continuous in memory, don't optimize
+                if (regularStrides[iOp][rank] != (ptrdiff_t)elementCount[iOp])
+                    return false;
+
+                elementCount[iOp] *= regularOpDims[rank];
             }
         }
-        else if (a.GetNumElements() == b.GetNumElements() && a.GetNumElements() == o.GetNumElements())
+        size_t aN = elementCount[0];
+        size_t bN = elementCount[1];
+        size_t oN = elementCount[2];
+        float* pA = a.Data() + offsets[0];
+        float* pB = b.Data() + offsets[1];
+        float* pO = o.Data() + offsets[2];
+        int count = (int)oN;
+
+        // scalar/vector
+        if ((aN == oN && bN == 1) || (bN == oN && aN == 1))
         {
-            // elementwise operation with no broadcast/reduction
-            int N = (int)a.GetNumElements();
+            float scalar = (aN == 1 ? pA[0] : pB[0]);
+            float* input = (aN == 1 ? pB : pA);
             switch (op)
             {
-            case ElementWiseOperator::opSum:
-                vsAdd(N, a.Data(), b.Data(), o.Data());
-                return true;
             case ElementWiseOperator::opElementwiseProduct:
-                vsMul(N, a.Data(), b.Data(), o.Data());
+                cblas_saxpby(count, scalar, input, 1, 0.0f, pO, 1);
+                return true;
+            case ElementWiseOperator::opSum:
+                memcpy(pO, input, count * sizeof(float));
+                cblas_saxpby(count, 1.0f, &scalar, 0, 1.0f, pO, 1);
                 return true;
             case ElementWiseOperator::opDifference:
-                vsSub(N, a.Data(), b.Data(), o.Data());
+                memcpy(pO, input, count * sizeof(float));
+                if (input == pA)
+                    cblas_saxpby(count, -1.0f, &scalar, 0, 1.0f, pO, 1);
+                else
+                    cblas_saxpby(count, 1.0f, &scalar, 0, -1.0f, pO, 1);
                 return true;
             }
         }
-        else if ((a.GetNumElements() == 1 && o.GetNumElements() == b.GetNumElements()) ||
-                 (b.GetNumElements() == 1 && o.GetNumElements() == a.GetNumElements()))
+        // vector/vector (elementwise 1:1)
+        else if (aN == oN && bN == oN)
         {
-            int N = (int)o.GetNumElements();
-            float scalar = (a.GetNumElements() == 1 ? a.Data()[0] : b.Data()[0]);
-            float* input = (a.GetNumElements() == 1 ? b.Data() : a.Data());
+            // elementwise operation with no broadcast/reduction
             switch (op)
             {
-            case ElementWiseOperator::opElementwiseProduct:
-                cblas_saxpby(N, scalar, input, 1, 0.0f, o.Data(), 1);
-                return true;
             case ElementWiseOperator::opSum:
-                memcpy(o.Data(), input, N * sizeof(float));
-                cblas_saxpby(N, 1.0f, &scalar, 0, 1.0f, o.Data(), 1);
+                vsAdd(count, pA, pB, pO);
+                return true;
+            case ElementWiseOperator::opElementwiseProduct:
+                vsMul(count, pA, pB, pO);
+                return true;
+            case ElementWiseOperator::opDifference:
+                vsSub(count, pA, pB, pO);
+                return true;
+            }
+        }
+        // vector/matrix, i.e. plus/multiply parameter
+        else if (std::max(aN, bN) == oN)
+        {
+            float* pMat = (aN < bN ? pB : pA);
+            float* pVec = (aN < bN ? pA : pB);
+            int vecN = (int)std::min(aN, bN);
+            int numVec = (int)(oN / vecN);
+            switch (op)
+            {
+            case ElementWiseOperator::opSum:
+                for (int i = 0; i < numVec; ++i)
+                {
+                    vsAdd(vecN, pMat + i * vecN, pVec, pO + i * vecN);
+                }
+                return true;
+            case ElementWiseOperator::opElementwiseProduct:
+                for (int i = 0; i < numVec; ++i)
+                {
+                    vsMul(vecN, pMat + i * vecN, pVec, pO + i * vecN);
+                }
                 return true;
             }
         }
