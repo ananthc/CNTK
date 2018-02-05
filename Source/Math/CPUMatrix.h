@@ -435,7 +435,7 @@ public:
 
     enum OptimizationFlag
     {
-        OPT_EVAL_WITH_MKL = 1,
+        OPT_EVAL_WITH_MKL = 1, // using Intel MKL functions for evaluation performance
     };
     static void SetOptimizationFlags(int flags);
     static int  GetOptimizationFlags();
